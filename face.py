@@ -29,6 +29,7 @@ else:
 
 # Start camera
 cap = cv2.VideoCapture(0)  # Change index if needed
+# cap = cv2.VideoCapture("rtsp://<username>:<password>@<camera_ip>:<port>/Streaming/Channels/101") for cctv camera
 
 print("[INFO] Starting attendance system...")
 # frame_count = 0
@@ -43,7 +44,7 @@ while True:
             frame, 
             db_path=DB_PATH,
             enforce_detection=False,
-            model_name='Facenet',
+            model_name='Facenet', # VGG-Face
             detector_backend='opencv'
         )
 
