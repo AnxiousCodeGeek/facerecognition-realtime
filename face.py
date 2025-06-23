@@ -3,88 +3,85 @@ from deepface import DeepFace
 from datetime import datetime
 import pandas as pd
 import os
+import time
 
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# import logging
-# logging.getLogger('deepface').setLevel(logging.ERROR)
-
-# Paths
-DB_PATH = "path/to/face_database"  # Change to your face database path
-CSV_FILE = "/path/to/attendance.csv"  # Change to your desired path
-
-# Parameters
+# === Configuration ===
+DB_PATH = "F:/CCTV ATTENDANCE/Fatima Saud Work/facerecognition-realtime/database"
+CSV_FILE = "F:/CCTV ATTENDANCE/Fatima Saud Work/facerecognition-realtime/attendance.csv"
 EXIT_TIMEOUT_SEC = 10
 
-# Attendance tracking
+# === State Tracking ===
 attendance = {}
 last_seen = {}
 
-# Initialize CSV
-if not os.path.exists(CSV_FILE):
+# === Load or Create CSV ===
+if os.path.exists(CSV_FILE):
+    df = pd.read_csv(CSV_FILE)
+else:
     df = pd.DataFrame(columns=["Name", "Entry Time", "Exit Time"])
     df.to_csv(CSV_FILE, index=False)
-else:
-    df = pd.read_csv(CSV_FILE)
 
-# Start camera
-cap = cv2.VideoCapture(0)  # Change index if needed
-# cap = cv2.VideoCapture("rtsp://<username>:<password>@<camera_ip>:<port>/Streaming/Channels/101") for cctv camera
+# === Open Camera ===
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("[ERROR] Camera not accessible.")
+    exit()
 
-print("[INFO] Starting attendance system...")
-# frame_count = 0
+print("[INFO] Attendance system started...")
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("[WARN] Failed to read frame.")
+            break
 
-    try:
-        res = DeepFace.find(
-            frame, 
-            db_path=DB_PATH,
-            enforce_detection=False,
-            model_name='Facenet', # VGG-Face
-            detector_backend='opencv'
-        )
+        try:
+            results = DeepFace.find(
+                frame,
+                db_path=DB_PATH,
+                enforce_detection=False,
+                model_name='Facenet',
+                detector_backend='opencv'
+            )
 
-        if len(res) > 0 and len(res[0]) > 0:
-            # Best match
-            best_match = res[0].iloc[0]
-            identity_path = best_match['identity']
-            # Extract name from path
-            name = identity_path.split('/')[-2]
+            if len(results) > 0 and len(results[0]) > 0:
+                best_match = results[0].iloc[0]
+                identity_path = best_match['identity']
+                name = identity_path.split(os.path.sep)[-2]
 
-            # Coordinates
-            xmin = int(best_match['source_x'])
-            ymin = int(best_match['source_y'])
-            xmax = int(xmin + best_match['source_w'])
-            ymax = int(ymin + best_match['source_h'])
+                xmin = int(best_match['source_x'])
+                ymin = int(best_match['source_y'])
+                xmax = int(xmin + best_match['source_w'])
+                ymax = int(ymin + best_match['source_h'])
 
-            # Draw bounding box + label
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-            cv2.putText(frame, name, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                cv2.putText(frame, name, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
 
-            # Attendance mark
-            if name not in attendance:
-                entry_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                attendance[name] = {"entry": entry_time, "exit": None}
-                print(f"[INFO] Entry marked: {name} at {entry_time}")
+                now = datetime.now()
 
-            last_seen[name] = datetime.now()
+                # Entry
+                if name not in attendance:
+                    entry_time = now.strftime("%Y-%m-%d %H:%M:%S")
+                    attendance[name] = {"entry": entry_time, "exit": None}
+                    print(f"[INFO] Entry marked: {name} at {entry_time}")
+                
+                last_seen[name] = now
 
-        # Handle exit
+        except Exception as e:
+            print("[ERROR]", str(e))
+
+        # Exit Logic
         now = datetime.now()
         for name in list(attendance.keys()):
             if name in last_seen:
-                seconds_since_seen = (now - last_seen[name]).total_seconds()
-                if seconds_since_seen > EXIT_TIMEOUT_SEC and attendance[name]["exit"] is None:
+                seconds_absent = (now - last_seen[name]).total_seconds()
+                if seconds_absent > EXIT_TIMEOUT_SEC and attendance[name]["exit"] is None:
                     exit_time = now.strftime("%Y-%m-%d %H:%M:%S")
                     attendance[name]["exit"] = exit_time
                     print(f"[INFO] Exit marked: {name} at {exit_time}")
 
-                    # Save to CSV
-                    df = pd.read_csv(CSV_FILE)
+                    # Append to CSV
                     df = pd.concat([df, pd.DataFrame([{
                         "Name": name,
                         "Entry Time": attendance[name]["entry"],
@@ -92,19 +89,32 @@ while True:
                     }])], ignore_index=True)
                     df.to_csv(CSV_FILE, index=False)
 
-                    # Remove from tracking
                     del attendance[name]
                     del last_seen[name]
 
-    except Exception as e:
-        print("[WARN]", e)
+        # Show camera feed
+        cv2.imshow("Attendance System", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("[INFO] Exiting...")
+            break
 
-    cv2.imshow("Attendance System", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+except KeyboardInterrupt:
+    print("[INFO] Interrupted by user.")
 
-cap.release()
-cv2.destroyAllWindows()
+finally:
+    # Handle unrecorded exits
+    print("[INFO] Saving remaining sessions...")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for name, record in attendance.items():
+        if record["exit"] is None:
+            record["exit"] = now
+            df = pd.concat([df, pd.DataFrame([{
+                "Name": name,
+                "Entry Time": record["entry"],
+                "Exit Time": record["exit"]
+            }])], ignore_index=True)
 
-
-
+    df.to_csv(CSV_FILE, index=False)
+    cap.release()
+    cv2.destroyAllWindows()
+    print("[INFO] Done. CSV updated.")
